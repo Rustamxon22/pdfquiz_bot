@@ -13,13 +13,13 @@ from states import QuizState
 from pdf_reader import extract_text
 from parser import parse_quiz
 
-# ====================== TOKEN ======================
+# ====================== TOKEN VA SOZLAMALAR ======================
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN topilmadi! .env faylida yoki Railway Variables da qo'shing.")
+    raise ValueError("❌ BOT_TOKEN topilmadi! .env faylida yoki Railway Variables bo'limida qo'shing.")
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
@@ -80,13 +80,13 @@ async def stop_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id in user_data:
         user_data[user_id]["stopped"] = True
-        del user_data[user_id]
+        if user_id in user_data:
+            del user_data[user_id]
     await state.finish()
     await message.answer("🛑 Test to‘xtatildi.\nYangi test uchun /start bosing.", reply_markup=main_menu)
-    await QuizState.waiting_pdf.set()
 
 
-# ====================== PDF QABUL ======================
+# ====================== PDF QABUL QILISH ======================
 @dp.message_handler(content_types=['document'], state=QuizState.waiting_pdf)
 async def handle_pdf(message: types.Message, state: FSMContext):
     try:
@@ -95,8 +95,8 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         # Faylni yuklab olish
         file_info = await bot.get_file(message.document.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
-        
-        # Vaqtinchalik fayl sifatida saqlash
+
+        # Vaqtinchalik fayl yaratish
         file_name = f"temp_{message.document.file_id}.pdf"
         with open(file_name, "wb") as f:
             f.write(downloaded_file.getvalue())
@@ -136,9 +136,154 @@ async def handle_pdf(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
 
 
-# Qolgan qismlar (ask_num_questions, ask_time_per_question, send_question, 
-# handle_poll_answer, finish_quiz) o‘zgarmadi. Ularni avvalgi kodingizdan qoldiring.
+# ====================== NECHTA SAVOL TANLASH ======================
+@dp.message_handler(state=QuizState.asking_num_questions)
+async def ask_num_questions(message: types.Message, state: FSMContext):
+    user = user_data.get(message.from_user.id)
+    if not user:
+        return
+    try:
+        num = int(message.text)
+        total = len(user["all_questions"])
+        if num < 1 or num > total:
+            await message.answer(f"1 dan {total} gacha son kiriting.")
+            return
 
-# ====================== ISHGA TUSHIRISH (Railway uchun to‘g‘rilangan) ======================
+        selected = user["all_questions"][:num]
+        random.shuffle(selected)
+        user["questions"] = selected
+        user["total_selected"] = num
+
+        await message.answer(f"✅ {num} ta savol tanlandi.\n\n⏱ Har bir savolga nechta sekund vaqt beraylik? (masalan: 30)")
+        await QuizState.asking_time.set()
+
+    except ValueError:
+        await message.answer("❌ Faqat butun son kiriting.")
+
+
+# ====================== VAQT SO‘RASH ======================
+@dp.message_handler(state=QuizState.asking_time)
+async def ask_time_per_question(message: types.Message, state: FSMContext):
+    user = user_data.get(message.from_user.id)
+    if not user:
+        return
+    try:
+        sec = int(message.text)
+        if sec < 5 or sec > 300:
+            await message.answer("5 dan 300 gacha son kiriting.")
+            return
+
+        user["time_per_question"] = sec
+        await message.answer(f"✅ Vaqt belgilandi: {sec} sekund.\n\nTest boshlanmoqda... 🎯")
+        
+        await QuizState.in_quiz.set()
+        await send_question(message.chat.id, message.from_user.id)
+
+    except ValueError:
+        await message.answer("❌ Faqat butun son kiriting.")
+
+
+# ====================== SAVOL YUBORISH ======================
+async def send_question(chat_id: int, user_id: int):
+    user = user_data.get(user_id)
+    if not user or user.get("stopped"):
+        return
+
+    if user["index"] >= len(user.get("questions", [])):
+        await finish_quiz(chat_id, user_id)
+        return
+
+    q = user["questions"][user["index"]]
+    time_limit = user["time_per_question"]
+
+    options = q["options"].copy()
+    correct_answer = q.get("correct")
+
+    # Variantlarni aralashtirish
+    indexed = list(enumerate(options))
+    random.shuffle(indexed)
+    shuffled_options = [opt for _, opt in indexed]
+    correct_new_index = next(i for i, (_, opt) in enumerate(indexed) if opt == correct_answer)
+
+    user["current_correct_index"] = correct_new_index
+    user["current_shuffled_options"] = shuffled_options
+    user["current_question_text"] = q["question"]
+
+    safe_options = [opt[:100] for opt in shuffled_options]  # Telegram cheklovi
+
+    try:
+        poll = await bot.send_poll(
+            chat_id=chat_id,
+            question=f"❓ Savol {user['index'] + 1}/{user['total_selected']}\n{q['question']}",
+            options=safe_options,
+            type="quiz",
+            correct_option_id=correct_new_index,
+            is_anonymous=False,
+            open_period=time_limit,
+            explanation=f"✅ To'g'ri javob: {correct_answer}"
+        )
+        user["current_poll_id"] = poll.poll.id
+        user["current_chat_id"] = chat_id
+    except Exception as e:
+        await bot.send_message(chat_id, f"Poll yuborishda xatolik: {e}")
+
+
+# ====================== POLL JAVOBI ======================
+@dp.poll_answer_handler()
+async def handle_poll_answer(poll_answer: types.PollAnswer):
+    user_id = poll_answer.user.id
+    user = user_data.get(user_id)
+    if not user or user.get("stopped"):
+        return
+
+    chosen_index = poll_answer.option_ids[0] if poll_answer.option_ids else -1
+    correct_idx = user.get("current_correct_index", -1)
+
+    if chosen_index == correct_idx:
+        user["score"] += 1
+
+    total_answered = user["index"] + 1
+    current_percent = round((user["score"] / total_answered) * 100, 1)
+
+    await bot.send_message(
+        user["current_chat_id"],
+        f"📊 Joriy natija: <b>{user['score']}/{total_answered}</b> ({current_percent}%)",
+        parse_mode="HTML"
+    )
+
+    user["index"] += 1
+
+    if user["index"] < len(user.get("questions", [])):
+        await asyncio.sleep(1.8)
+        await send_question(user["current_chat_id"], user_id)
+    else:
+        await finish_quiz(user["current_chat_id"], user_id)
+
+
+# ====================== TEST TUGASHI ======================
+async def finish_quiz(chat_id: int, user_id: int):
+    user = user_data.get(user_id)
+    if not user:
+        return
+
+    total = user["total_selected"]
+    score = user["score"]
+    percent = round((score / total) * 100, 1) if total > 0 else 0
+
+    await bot.send_message(
+        chat_id,
+        f"🎉 <b>Test tugadi!</b>\n\n"
+        f"To‘g‘ri javoblar: <b>{score}</b>/{total}\n"
+        f"Natija: <b>{percent}%</b>",
+        parse_mode="HTML",
+        reply_markup=main_menu
+    )
+
+    if user_id in user_data:
+        del user_data[user_id]
+
+
+# ====================== BOTNI ISHGA TUSHIRISH ======================
 if __name__ == "__main__":
+    print("🚀 Quiz Bot ishga tushdi...")
     executor.start_polling(dp, skip_updates=True)
