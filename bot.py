@@ -21,16 +21,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN topilmadi! .env faylida qo'shing.")
 
+# ====================== ADMIN ID ======================
+# Sizning Telegram ID ingiz (https://t.me/userinfobot dan bilib oling)
+ADMIN_ID = 8426526387   # ← O'Z TELEGRAM ID INGIZNI YOZING!
+
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
 user_data = {}
-paid_users = set()   # Bir marta to'lov qilgan foydalanuvchilar (doimiy saqlanadi)
+paid_users = set()        # Tasdiqlangan foydalanuvchilar
+pending_checks = {}       # Kutilayotgan cheklar: {user_id: file_id}
 
 # ====================== TO'LOV MA'LUMOTLARI ======================
-KARTA_RAQAMI = "5614 6830 3139 7854"   # ← O'Z KARTANGIZNI YOZING!
-KARTA_ISM    = "Saidaxmedov Rustamjon"             
+KARTA_RAQAMI = "5614 6830 3139 7854"
+KARTA_ISM    = "Saidaxmedov Rustamjon"
 TOlov_SUMMA  = "10 000 so'm"
 
 # ====================== MENU ======================
@@ -46,7 +51,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await state.finish()
 
-    # Agar allaqachon to'lov qilgan bo'lsa
     if user_id in paid_users:
         await message.answer(
             "👋 <b>Xush kelibsiz!</b>\n\n"
@@ -55,7 +59,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
         await QuizState.waiting_pdf.set()
-        
         await message.answer("""
 📤 <b>PDF faylni yuboring.</b>
 
@@ -72,11 +75,9 @@ Variant 4
 ++++
 Keyingi savol...
 """, parse_mode="HTML")
-        
         await message.answer("📤 PDF ni yuboring...", reply_markup=main_menu)
         return
 
-    # To'lov qilmagan foydalanuvchi
     if user_id in user_data:
         del user_data[user_id]
 
@@ -102,24 +103,116 @@ Keyingi savol...
     )
 
 
+# ====================== CALLBACK: CHEK YUBORAMAN ======================
+@dp.callback_query_handler(lambda c: c.data == "send_check")
+async def paid_check_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.answer(
+        "📸 Iltimos, to'lov cheki rasmini yuboring.\n"
+        "Admin tekshirib, tez orada tasdiqlaydi."
+    )
+
+
 # ====================== CHEK (RASM) QABUL QILISH ======================
 @dp.message_handler(content_types=['photo'], state='*')
 async def handle_payment_check(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    paid_users.add(user_id)   # To'lov qilgan sifatida belgilaymiz
 
+    # Agar allaqachon tasdiqlangan bo'lsa — bu quiz uchun rasm emas
+    if user_id in paid_users:
+        await message.answer("ℹ️ Siz allaqachon tasdiqlangansiz. PDF faylni yuboring.")
+        return
+
+    # Chekni kutish ro'yxatiga qo'shamiz
+    photo_id = message.photo[-1].file_id
+    pending_checks[user_id] = {
+        "file_id":   photo_id,
+        "username":  message.from_user.username or "Noma'lum",
+        "full_name": message.from_user.full_name,
+        "user_id":   user_id,
+    }
+
+    # Foydalanuvchiga xabar
     await message.answer(
-        "✅ <b>To'lov qabul qilindi!</b>\n\n"
-        "Siz endi <b>cheksiz rejimdasiz</b> 🎉\n\n"
+        "⏳ <b>Chekingiz qabul qilindi!</b>\n\n"
+        "Admin tekshirib, tez orada tasdiqlaydi.\n"
+        "Odatda 5-15 daqiqa ichida javob beriladi.",
+        parse_mode="HTML"
+    )
+
+   # Adminga chek + Tasdiqlash/Rad etish tugmalari
+    admin_keyboard = InlineKeyboardMarkup(row_width=2)
+    admin_keyboard.add(
+        InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
+        InlineKeyboardButton("❌ Rad etish",  callback_data=f"reject_{user_id}")
+    )
+
+    username_val = message.from_user.username
+    if username_val:
+        username_show = username_val
+    else:
+        username_show = "Nomalum"
+
+    admin_text = (
+        "💳 <b>Yangi to'lov cheki!</b>\n\n"
+        "👤 Ism: <b>" + message.from_user.full_name + "</b>\n"
+        "🆔 ID: <code>" + str(user_id) + "</code>\n"
+        "📛 Username: @" + username_show + "\n\n"
+        "Quyida tasdiqlash yoki rad etish tugmasini bosing 👇"
+    )
+
+    await bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=photo_id,
+        caption=admin_text,
+        parse_mode="HTML",
+        reply_markup=admin_keyboard
+    
+    )
+
+    await bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=photo_id,
+        caption=admin_text,
+        parse_mode="HTML",
+        reply_markup=admin_keyboard
+    )
+
+
+# ====================== ADMIN: TASDIQLASH ======================
+@dp.callback_query_handler(lambda c: c.data.startswith("approve_"))
+async def approve_payment(callback: types.CallbackQuery):
+    # Faqat admin bosishi mumkin
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+
+    user_id = int(callback.data.split("_")[1])
+    paid_users.add(user_id)
+
+    if user_id in pending_checks:
+        del pending_checks[user_id]
+
+    # Adminga tasdiqlandi deb ko'rsatish
+    await callback.message.edit_caption(
+        callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>",
+        parse_mode="HTML"
+    )
+    await callback.answer("✅ Foydalanuvchi tasdiqlandi!")
+
+    # Foydalanuvchiga xabar
+    await bot.send_message(
+        user_id,
+        "🎉 <b>To'lovingiz tasdiqlandi!</b>\n\n"
+        "Endi siz <b>cheksiz rejimdasiz</b> ✅\n\n"
         "Quiz yaratish uchun PDF faylni yuboring.",
         parse_mode="HTML"
     )
-    
-    await QuizState.waiting_pdf.set()
-    
-    pdf_format_text = """
-📤 <b>Endi PDF faylni yuboring.</b>
-Bot avtomatik ravishda quiz yaratadi.
+
+    # PDF format ko'rsatmasi
+    await bot.send_message(
+        user_id,
+        """📤 <b>PDF faylni yuboring.</b>
 
 📄 PDF faylni quyidagi formatda tayyorlang:
 
@@ -140,17 +233,72 @@ Keyingi savol matni
 
 📌 <b>Qoidalar:</b>
 • ==== — savol va variantlarni ajratadi
-• ++++ — savollar orasini ajratadi (oxirida ham bo‘lishi shart)
-• # — to'g'ri javob oldiga qo‘yiladi (faqat bittasiga)
-• Variantlar istalgan tartibda yoziladi — bot o‘zi aralashtiradi
-"""
-    await message.answer(pdf_format_text, parse_mode="HTML")
-    await message.answer("📤 PDF faylni yuborishingiz mumkin...", reply_markup=main_menu)
+• ++++ — savollar orasini ajratadi
+• # — to'g'ri javob oldiga qo'yiladi (faqat bittasiga)""",
+        parse_mode="HTML"
+    )
+
+    # FSM holatini waiting_pdf ga o'tkazish
+    state = dp.current_state(chat=user_id, user=user_id)
+    await state.set_state(QuizState.waiting_pdf)
 
 
-@dp.callback_query_handler(lambda c: c.data == "send_check")
-async def paid_check_callback(callback: types.CallbackQuery):
-    await callback.answer("Chek rasmini yuboring ✅", show_alert=False)
+# ====================== ADMIN: RAD ETISH ======================
+@dp.callback_query_handler(lambda c: c.data.startswith("reject_"))
+async def reject_payment(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Siz admin emassiz!", show_alert=True)
+        return
+
+    user_id = int(callback.data.split("_")[1])
+
+    if user_id in pending_checks:
+        del pending_checks[user_id]
+
+    # Adminga ko'rsatish
+    await callback.message.edit_caption(
+        callback.message.caption + "\n\n❌ <b>RAD ETILDI</b>",
+        parse_mode="HTML"
+    )
+    await callback.answer("❌ Rad etildi.")
+
+    # Foydalanuvchiga xabar
+    await bot.send_message(
+        user_id,
+        "❌ <b>To'lovingiz tasdiqlanmadi.</b>\n\n"
+        "Sabab: Chek noto'g'ri yoki to'lov amalga oshmagan.\n\n"
+        f"Iltimos, <b>{TOlov_SUMMA}</b> miqdorida to'lov qiling va chekni qayta yuboring.\n"
+        f"💳 Karta: <code>{KARTA_RAQAMI}</code>",
+        parse_mode="HTML"
+    )
+
+
+# ====================== ADMIN BUYRUQLARI ======================
+@dp.message_handler(commands=['users'], state='*')
+async def admin_users(message: types.Message, state: FSMContext):
+    """Tasdiqlangan foydalanuvchilar ro'yxati"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not paid_users:
+        await message.answer("Hali tasdiqlangan foydalanuvchi yo'q.")
+        return
+    text = f"✅ Tasdiqlangan foydalanuvchilar: <b>{len(paid_users)} ta</b>\n\n"
+    text += "\n".join([f"• <code>{uid}</code>" for uid in paid_users])
+    await message.answer(text, parse_mode="HTML")
+
+
+@dp.message_handler(commands=['pending'], state='*')
+async def admin_pending(message: types.Message, state: FSMContext):
+    """Kutilayotgan cheklar"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not pending_checks:
+        await message.answer("Hozircha kutilayotgan chek yo'q.")
+        return
+    text = f"⏳ Kutilayotgan cheklar: <b>{len(pending_checks)} ta</b>\n\n"
+    for uid, info in pending_checks.items():
+        text += f"• {info['full_name']} (@{info['username']}) — ID: <code>{uid}</code>\n"
+    await message.answer(text, parse_mode="HTML")
 
 
 # ====================== PDF QABUL QILISH ======================
@@ -218,9 +366,6 @@ async def stop_cmd(message: types.Message, state: FSMContext):
     await message.answer("🛑 Test to'xtatildi.\nYangi test uchun /start bosing.", reply_markup=main_menu)
 
 
-# ====================== QOLGAN KOD (o'zgartirilmagan) ======================
-# ... (SAVOL SONI, VAQT, SAVOL YUBORISH, TIMEOUT, JAVOB HANDLER, FINISH_QUIZ) ...
-
 # ====================== SAVOL SONI ======================
 @dp.message_handler(state=QuizState.asking_num_questions)
 async def ask_num_questions(message: types.Message, state: FSMContext):
@@ -287,15 +432,15 @@ async def send_question(chat_id: int, user_id: int):
     options        = q["options"].copy()
     correct_answer = q.get("correct")
 
-    indexed          = list(enumerate(options))
+    indexed           = list(enumerate(options))
     random.shuffle(indexed)
     shuffled_options  = [opt for _, opt in indexed]
     correct_new_index = next(i for i, (_, opt) in enumerate(indexed) if opt == correct_answer)
 
-    user["current_correct_index"]   = correct_new_index
+    user["current_correct_index"]    = correct_new_index
     user["current_shuffled_options"] = shuffled_options
-    user["current_question_text"]   = q["question"]
-    user["answered"]                = False
+    user["current_question_text"]    = q["question"]
+    user["answered"]                 = False
 
     safe_options = [opt[:100] for opt in shuffled_options]
 
