@@ -3,12 +3,14 @@ import random
 import asyncio
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils import executor
-
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from states import QuizState
 from pdf_reader import extract_text
 from parser import parse_quiz
@@ -22,16 +24,15 @@ if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN topilmadi! .env faylida qo'shing.")
 
 # ====================== ADMIN ID ======================
-# Sizning Telegram ID ingiz (https://t.me/userinfobot dan bilib oling)
 ADMIN_ID = 8426526387   # ← O'Z TELEGRAM ID INGIZNI YOZING!
 
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(storage=storage)
 
 user_data = {}
-paid_users = set()        # Tasdiqlangan foydalanuvchilar
-pending_checks = {}       # Kutilayotgan cheklar: {user_id: file_id}
+paid_users = set()
+pending_checks = {}
 
 # ====================== TO'LOV MA'LUMOTLARI ======================
 KARTA_RAQAMI = "5614 6830 3139 7854"
@@ -39,26 +40,29 @@ KARTA_ISM    = "Saidaxmedov Rustamjon"
 TOlov_SUMMA  = "10 000 so'm"
 
 # ====================== MENU ======================
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add(KeyboardButton("/start"))
-main_menu.add(KeyboardButton("/restart"))
-main_menu.add(KeyboardButton("/stop"))
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="/start")],
+        [KeyboardButton(text="/restart")],
+        [KeyboardButton(text="/stop")],
+    ],
+    resize_keyboard=True
+)
 
 
 # ====================== START ======================
-@dp.message_handler(commands=['start'], state='*')
+@dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
-    await state.finish()
+    await state.clear()
 
     if user_id in paid_users:
         await message.answer(
             "👋 <b>Xush kelibsiz!</b>\n\n"
             "Siz cheksiz rejimdasiz ✅\n\n"
-            "Quiz boshlash uchun PDF faylni yuboring.",
-            parse_mode="HTML"
+            "Quiz boshlash uchun PDF faylni yuboring."
         )
-        await QuizState.waiting_pdf.set()
+        await state.set_state(QuizState.waiting_pdf)
         await message.answer("""
 📤 <b>PDF faylni yuboring.</b>
 
@@ -74,7 +78,7 @@ Variant 3
 Variant 4
 ++++
 Keyingi savol...
-""", parse_mode="HTML")
+""")
         await message.answer("📤 PDF ni yuboring...", reply_markup=main_menu)
         return
 
@@ -92,10 +96,11 @@ Keyingi savol...
 
 ✅ Pulni o'tkazib bo'lgach, <b>chek rasmini</b> shu yerga yuboring.
 """
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text)
 
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(InlineKeyboardButton("✅ To'lov qildim, chek yuboraman", callback_data="send_check"))
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ To'lov qildim, chek yuboraman", callback_data="send_check")]
+    ])
 
     await message.answer(
         "To'lovni amalga oshirgandan keyin pastdagi tugmani bosing va chek rasmini yuboring 👇",
@@ -104,7 +109,7 @@ Keyingi savol...
 
 
 # ====================== CALLBACK: CHEK YUBORAMAN ======================
-@dp.callback_query_handler(lambda c: c.data == "send_check")
+@dp.callback_query(F.data == "send_check")
 async def paid_check_callback(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.answer(
@@ -114,16 +119,14 @@ async def paid_check_callback(callback: types.CallbackQuery):
 
 
 # ====================== CHEK (RASM) QABUL QILISH ======================
-@dp.message_handler(content_types=['photo'], state='*')
+@dp.message(F.photo)
 async def handle_payment_check(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
 
-    # Agar allaqachon tasdiqlangan bo'lsa — bu quiz uchun rasm emas
     if user_id in paid_users:
         await message.answer("ℹ️ Siz allaqachon tasdiqlangansiz. PDF faylni yuboring.")
         return
 
-    # Chekni kutish ro'yxatiga qo'shamiz
     photo_id = message.photo[-1].file_id
     pending_checks[user_id] = {
         "file_id":   photo_id,
@@ -132,32 +135,26 @@ async def handle_payment_check(message: types.Message, state: FSMContext):
         "user_id":   user_id,
     }
 
-    # Foydalanuvchiga xabar
     await message.answer(
         "⏳ <b>Chekingiz qabul qilindi!</b>\n\n"
         "Admin tekshirib, tez orada tasdiqlaydi.\n"
-        "Odatda 5-15 daqiqa ichida javob beriladi.",
-        parse_mode="HTML"
+        "Odatda 5-15 daqiqa ichida javob beriladi."
     )
 
-   # Adminga chek + Tasdiqlash/Rad etish tugmalari
-    admin_keyboard = InlineKeyboardMarkup(row_width=2)
-    admin_keyboard.add(
-        InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
-        InlineKeyboardButton("❌ Rad etish",  callback_data=f"reject_{user_id}")
-    )
+    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"approve_{user_id}"),
+            InlineKeyboardButton(text="❌ Rad etish",  callback_data=f"reject_{user_id}")
+        ]
+    ])
 
-    username_val = message.from_user.username
-    if username_val:
-        username_show = username_val
-    else:
-        username_show = "Nomalum"
+    username_show = message.from_user.username or "Nomalum"
 
     admin_text = (
         "💳 <b>Yangi to'lov cheki!</b>\n\n"
-        "👤 Ism: <b>" + message.from_user.full_name + "</b>\n"
-        "🆔 ID: <code>" + str(user_id) + "</code>\n"
-        "📛 Username: @" + username_show + "\n\n"
+        f"👤 Ism: <b>{message.from_user.full_name}</b>\n"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"📛 Username: @{username_show}\n\n"
         "Quyida tasdiqlash yoki rad etish tugmasini bosing 👇"
     )
 
@@ -165,24 +162,13 @@ async def handle_payment_check(message: types.Message, state: FSMContext):
         chat_id=ADMIN_ID,
         photo=photo_id,
         caption=admin_text,
-        parse_mode="HTML",
-        reply_markup=admin_keyboard
-    
-    )
-
-    await bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=photo_id,
-        caption=admin_text,
-        parse_mode="HTML",
         reply_markup=admin_keyboard
     )
 
 
 # ====================== ADMIN: TASDIQLASH ======================
-@dp.callback_query_handler(lambda c: c.data.startswith("approve_"))
+@dp.callback_query(F.data.startswith("approve_"))
 async def approve_payment(callback: types.CallbackQuery):
-    # Faqat admin bosishi mumkin
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ Siz admin emassiz!", show_alert=True)
         return
@@ -193,23 +179,18 @@ async def approve_payment(callback: types.CallbackQuery):
     if user_id in pending_checks:
         del pending_checks[user_id]
 
-    # Adminga tasdiqlandi deb ko'rsatish
     await callback.message.edit_caption(
-        callback.message.caption + "\n\n✅ <b>TASDIQLANDI</b>",
-        parse_mode="HTML"
+        (callback.message.caption or "") + "\n\n✅ <b>TASDIQLANDI</b>"
     )
     await callback.answer("✅ Foydalanuvchi tasdiqlandi!")
 
-    # Foydalanuvchiga xabar
     await bot.send_message(
         user_id,
         "🎉 <b>To'lovingiz tasdiqlandi!</b>\n\n"
         "Endi siz <b>cheksiz rejimdasiz</b> ✅\n\n"
-        "Quiz yaratish uchun PDF faylni yuboring.",
-        parse_mode="HTML"
+        "Quiz yaratish uchun PDF faylni yuboring."
     )
 
-    # PDF format ko'rsatmasi
     await bot.send_message(
         user_id,
         """📤 <b>PDF faylni yuboring.</b>
@@ -234,17 +215,20 @@ Keyingi savol matni
 📌 <b>Qoidalar:</b>
 • ==== — savol va variantlarni ajratadi
 • ++++ — savollar orasini ajratadi
-• # — to'g'ri javob oldiga qo'yiladi (faqat bittasiga)""",
-        parse_mode="HTML"
+• # — to'g'ri javob oldiga qo'yiladi (faqat bittasiga)"""
     )
 
     # FSM holatini waiting_pdf ga o'tkazish
-    state = dp.current_state(chat=user_id, user=user_id)
-    await state.set_state(QuizState.waiting_pdf)
+    user_state = FSMContext(
+        storage=dp.storage,
+        key=types.Chat(id=user_id, type="private"),
+        bot=bot
+    )
+    await user_state.set_state(QuizState.waiting_pdf)
 
 
 # ====================== ADMIN: RAD ETISH ======================
-@dp.callback_query_handler(lambda c: c.data.startswith("reject_"))
+@dp.callback_query(F.data.startswith("reject_"))
 async def reject_payment(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ Siz admin emassiz!", show_alert=True)
@@ -255,28 +239,23 @@ async def reject_payment(callback: types.CallbackQuery):
     if user_id in pending_checks:
         del pending_checks[user_id]
 
-    # Adminga ko'rsatish
     await callback.message.edit_caption(
-        callback.message.caption + "\n\n❌ <b>RAD ETILDI</b>",
-        parse_mode="HTML"
+        (callback.message.caption or "") + "\n\n❌ <b>RAD ETILDI</b>"
     )
     await callback.answer("❌ Rad etildi.")
 
-    # Foydalanuvchiga xabar
     await bot.send_message(
         user_id,
         "❌ <b>To'lovingiz tasdiqlanmadi.</b>\n\n"
         "Sabab: Chek noto'g'ri yoki to'lov amalga oshmagan.\n\n"
         f"Iltimos, <b>{TOlov_SUMMA}</b> miqdorida to'lov qiling va chekni qayta yuboring.\n"
-        f"💳 Karta: <code>{KARTA_RAQAMI}</code>",
-        parse_mode="HTML"
+        f"💳 Karta: <code>{KARTA_RAQAMI}</code>"
     )
 
 
 # ====================== ADMIN BUYRUQLARI ======================
-@dp.message_handler(commands=['users'], state='*')
-async def admin_users(message: types.Message, state: FSMContext):
-    """Tasdiqlangan foydalanuvchilar ro'yxati"""
+@dp.message(Command("users"))
+async def admin_users(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     if not paid_users:
@@ -284,12 +263,11 @@ async def admin_users(message: types.Message, state: FSMContext):
         return
     text = f"✅ Tasdiqlangan foydalanuvchilar: <b>{len(paid_users)} ta</b>\n\n"
     text += "\n".join([f"• <code>{uid}</code>" for uid in paid_users])
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text)
 
 
-@dp.message_handler(commands=['pending'], state='*')
-async def admin_pending(message: types.Message, state: FSMContext):
-    """Kutilayotgan cheklar"""
+@dp.message(Command("pending"))
+async def admin_pending(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     if not pending_checks:
@@ -298,11 +276,11 @@ async def admin_pending(message: types.Message, state: FSMContext):
     text = f"⏳ Kutilayotgan cheklar: <b>{len(pending_checks)} ta</b>\n\n"
     for uid, info in pending_checks.items():
         text += f"• {info['full_name']} (@{info['username']}) — ID: <code>{uid}</code>\n"
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text)
 
 
 # ====================== PDF QABUL QILISH ======================
-@dp.message_handler(content_types=['document'], state=QuizState.waiting_pdf)
+@dp.message(F.document, QuizState.waiting_pdf)
 async def handle_pdf(message: types.Message, state: FSMContext):
     try:
         await message.answer("📤 PDF yuklanmoqda, biroz kuting...")
@@ -344,30 +322,30 @@ async def handle_pdf(message: types.Message, state: FSMContext):
             reply_markup=main_menu
         )
         await message.answer("🔢 Nechta savol bilan test o'tkazmoqchisiz? (masalan: 10)")
-        await QuizState.asking_num_questions.set()
+        await state.set_state(QuizState.asking_num_questions)
 
     except Exception as e:
         await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
 
 
 # ====================== RESTART / STOP ======================
-@dp.message_handler(commands=['restart'], state='*')
+@dp.message(Command("restart"))
 async def restart_cmd(message: types.Message, state: FSMContext):
     await start_cmd(message, state)
 
 
-@dp.message_handler(commands=['stop'], state='*')
+@dp.message(Command("stop"))
 async def stop_cmd(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     if user_id in user_data:
         user_data[user_id]["stopped"] = True
         del user_data[user_id]
-    await state.finish()
+    await state.clear()
     await message.answer("🛑 Test to'xtatildi.\nYangi test uchun /start bosing.", reply_markup=main_menu)
 
 
 # ====================== SAVOL SONI ======================
-@dp.message_handler(state=QuizState.asking_num_questions)
+@dp.message(QuizState.asking_num_questions)
 async def ask_num_questions(message: types.Message, state: FSMContext):
     user = user_data.get(message.from_user.id)
     if not user:
@@ -381,21 +359,21 @@ async def ask_num_questions(message: types.Message, state: FSMContext):
 
         selected = user["all_questions"][:num]
         random.shuffle(selected)
-        user["questions"]       = selected
-        user["total_selected"]  = num
+        user["questions"]      = selected
+        user["total_selected"] = num
 
         await message.answer(
             f"✅ {num} ta savol tanlandi.\n\n"
             f"⏱ Har bir savolga nechta sekund vaqt beraylik? (masalan: 30)"
         )
-        await QuizState.asking_time.set()
+        await state.set_state(QuizState.asking_time)
 
     except ValueError:
         await message.answer("❌ Faqat butun son kiriting.")
 
 
 # ====================== VAQT ======================
-@dp.message_handler(state=QuizState.asking_time)
+@dp.message(QuizState.asking_time)
 async def ask_time_per_question(message: types.Message, state: FSMContext):
     user = user_data.get(message.from_user.id)
     if not user:
@@ -409,7 +387,7 @@ async def ask_time_per_question(message: types.Message, state: FSMContext):
         user["time_per_question"] = sec
         await message.answer(f"✅ Vaqt belgilandi: {sec} sekund.\n\nTest boshlanmoqda... 🎯")
 
-        await QuizState.in_quiz.set()
+        await state.set_state(QuizState.in_quiz)
         await send_question(message.chat.id, message.from_user.id)
 
     except ValueError:
@@ -432,7 +410,7 @@ async def send_question(chat_id: int, user_id: int):
     options        = q["options"].copy()
     correct_answer = q.get("correct")
 
-    indexed           = list(enumerate(options))
+    indexed          = list(enumerate(options))
     random.shuffle(indexed)
     shuffled_options  = [opt for _, opt in indexed]
     correct_new_index = next(i for i, (_, opt) in enumerate(indexed) if opt == correct_answer)
@@ -485,8 +463,7 @@ async def auto_next_on_timeout(chat_id: int, user_id: int, poll_id: str, time_li
     await bot.send_message(
         chat_id,
         f"⏱ Vaqt tugadi! Savol o'tkazib yuborildi.\n"
-        f"📊 Joriy natija: <b>{user['score']}/{total_answered}</b> ({current_percent}%)",
-        parse_mode="HTML"
+        f"📊 Joriy natija: <b>{user['score']}/{total_answered}</b> ({current_percent}%)"
     )
 
     if user["index"] < len(user.get("questions", [])):
@@ -497,7 +474,7 @@ async def auto_next_on_timeout(chat_id: int, user_id: int, poll_id: str, time_li
 
 
 # ====================== JAVOB HANDLER ======================
-@dp.poll_answer_handler()
+@dp.poll_answer()
 async def handle_poll_answer(poll_answer: types.PollAnswer):
     user_id = poll_answer.user.id
     user    = user_data.get(user_id)
@@ -517,8 +494,7 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
 
     await bot.send_message(
         user["current_chat_id"],
-        f"📊 Joriy natija: <b>{user['score']}/{total_answered}</b> ({current_percent}%)",
-        parse_mode="HTML"
+        f"📊 Joriy natija: <b>{user['score']}/{total_answered}</b> ({current_percent}%)"
     )
 
     user["index"] += 1
@@ -545,7 +521,6 @@ async def finish_quiz(chat_id: int, user_id: int):
         f"🎉 <b>Test tugadi!</b>\n\n"
         f"To'g'ri javoblar: <b>{score}</b>/{total}\n"
         f"Natija: <b>{percent}%</b>",
-        parse_mode="HTML",
         reply_markup=main_menu
     )
 
@@ -554,6 +529,10 @@ async def finish_quiz(chat_id: int, user_id: int):
 
 
 # ====================== BOTNI ISHGA TUSHIRISH ======================
-if __name__ == "__main__":
+async def main():
     print("🚀 Quiz Bot ishga tushdi...")
-    executor.start_polling(dp, skip_updates=True)
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
