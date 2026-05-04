@@ -26,7 +26,9 @@ if not BOT_TOKEN:
 # ====================== ADMIN ID ======================
 ADMIN_ID = 8426526387   # ← O'Z TELEGRAM ID INGIZNI YOZING!
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
