@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,9 +27,7 @@ if not BOT_TOKEN:
 # ====================== ADMIN ID ======================
 ADMIN_ID = 8426526387   # ← O'Z TELEGRAM ID INGIZNI YOZING!
 
-from aiogram.client.default import DefaultBotProperties
-
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -182,7 +181,8 @@ async def approve_payment(callback: types.CallbackQuery):
         del pending_checks[user_id]
 
     await callback.message.edit_caption(
-        (callback.message.caption or "") + "\n\n✅ <b>TASDIQLANDI</b>"
+        caption=(callback.message.caption or "") + "\n\n✅ <b>TASDIQLANDI</b>",
+        parse_mode="HTML"
     )
     await callback.answer("✅ Foydalanuvchi tasdiqlandi!")
 
@@ -215,17 +215,19 @@ Keyingi savol matni
 ++++
 
 📌 <b>Qoidalar:</b>
-• ==== — savol va variantlarni ajratadi
-• ++++ — savollar orasini ajratadi
-• # — to'g'ri javob oldiga qo'yiladi (faqat bittasiga)"""
+- ==== — savol va variantlarni ajratadi
+- ++++ — savollar orasini ajratadi
+- # — to'g'ri javob oldiga qo'yiladi (faqat bittasiga)"""
     )
 
-    # FSM holatini waiting_pdf ga o'tkazish
-    user_state = FSMContext(
-        storage=dp.storage,
-        key=types.Chat(id=user_id, type="private"),
-        bot=bot
+    # ✅ TO'G'RILANGAN QISM
+    bot_info = await bot.get_me()
+    storage_key = StorageKey(
+        bot_id=bot_info.id,
+        chat_id=user_id,
+        user_id=user_id
     )
+    user_state = FSMContext(storage=dp.storage, key=storage_key)
     await user_state.set_state(QuizState.waiting_pdf)
 
 
