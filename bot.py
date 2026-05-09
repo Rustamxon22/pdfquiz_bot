@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
@@ -27,7 +28,7 @@ if not BOT_TOKEN:
 # ====================== ADMIN ID ======================
 ADMIN_ID = 8426526387   # ← O'Z TELEGRAM ID INGIZNI YOZING!
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -244,7 +245,8 @@ async def reject_payment(callback: types.CallbackQuery):
         del pending_checks[user_id]
 
     await callback.message.edit_caption(
-        (callback.message.caption or "") + "\n\n❌ <b>RAD ETILDI</b>"
+        caption=(callback.message.caption or "") + "\n\n❌ <b>RAD ETILDI</b>",
+        parse_mode="HTML"
     )
     await callback.answer("❌ Rad etildi.")
 
